@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Page {
+  id          String   @id @default(cuid())
+  url         String   @unique
+  finalUrl    String
+  statusCode  Int
+  contentType String?
+  title       String?
+  html        String?  @db.Text
+  contentHash String?
+  fetchedAt   DateTime @default(now())
+  links       Link[]
+
+  @@index([fetchedAt])
+}
+
+model Link {
+  id         String   @id @default(cuid())
+  fromPageId String
+  fromPage   Page     @relation(fields: [fromPageId], references: [id], onDelete: Cascade)
+  toUrl      String
+  createdAt  DateTime @default(now())
+
+  @@unique([fromPageId, toUrl])
+  @@index([toUrl])
+}

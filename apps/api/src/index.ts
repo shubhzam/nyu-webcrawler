@@ -1,6 +1,8 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import crawlRouter from './routes/crawl'
+
 
 const app = express()
 const port = process.env.PORT || 3000
@@ -15,6 +17,9 @@ app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3001' }))
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
 })
+
+app.use('/api/crawl', crawlRouter)
+
 
 app.listen(port, () => {
   console.log(`api running on port ${port}`)
