@@ -21,7 +21,12 @@ app.get('/health', (req, res) => {
 app.use('/api/crawl', crawlRouter)
 app.use('/api/crawl/job', jobRouter)
 
-
+// list all jobs - separate from job router to avoid conflicting with /:jobId
+app.get('/api/crawl/jobs', async (req, res) => {
+  const { listJobs } = await import('./services/frontier.service')
+  const jobs = await listJobs()
+  res.json({ jobs })
+})
 
 app.listen(port, () => {
   console.log(`api running on port ${port}`)
