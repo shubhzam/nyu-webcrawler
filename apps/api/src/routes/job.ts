@@ -8,6 +8,7 @@ const startJobSchema = z.object({
   url: z.string().url(),
   maxDepth: z.number().int().min(1).max(10).optional(),
   maxPages: z.number().int().min(1).max(500).optional(),
+  crawlDelay: z.number().min(0).max(30).optional(),
 })
 
 // start a new crawl job
@@ -20,8 +21,8 @@ router.post('/', async (req, res) => {
     return
   }
 
-  const { url, maxDepth, maxPages } = result.data
-  const job = await startJob(url, maxDepth, maxPages)
+  const { url, maxDepth, maxPages, crawlDelay } = result.data
+  const job = await startJob(url, maxDepth, maxPages, crawlDelay)
   res.status(202).json({ ...job, status: 'started' })
 })
 

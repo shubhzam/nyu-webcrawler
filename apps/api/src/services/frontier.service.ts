@@ -1,6 +1,8 @@
 import { createId } from '@paralleldrive/cuid2'
 import redis from '../lib/redis'
 import { crawl } from './crawl.service'
+import { isAllowedByRobots } from '../lib/robots'
+import { isOnCooldown, setCooldown } from '../lib/rateLimit'
 
 const MAX_DEPTH = 3
 const MAX_PAGES = 100
@@ -22,7 +24,12 @@ async function enqueue(jobId: string, url: string, depth: number) {
 }
 
 // the worker loop - runs until queue is empty or limits are hit
-async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
+async function runWorker(
+  jobId: string,
+  maxDepth: number,
+  maxPages: number,
+  crawlDelay: number
+) {
   console.log(`worker started for job ${jobId}`)
 
   while (true) {
@@ -36,29 +43,46 @@ async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
     // blocking pop - waits up to 5s if queue is empty
     const result = await redis.blpop(frontierKey(jobId), 5)
     if (!result) {
-      // queue empty and timeout fired - we're done
       console.log(`job ${jobId} queue empty, stopping`)
       break
     }
 
-    // result is [key, value] from blpop
     const { url, depth } = JSON.parse(result[1]!)
 
     // skip if too deep
     if (depth > maxDepth) continue
 
-    // url seen? check - skip if we've already crawled this url in this job
+    // url seen? check - skip if already crawled this job
     const seen = await redis.sismember(seenKey(jobId), url)
     if (seen) {
       console.log(`skipping seen url: ${url}`)
       continue
     }
 
+    // robots.txt check - skip if disallowed
+    const allowed = await isAllowedByRobots(url)
+    if (!allowed) {
+      console.log(`robots.txt disallows: ${url}`)
+      continue
+    }
+
+    // rate limit check - re-enqueue if host is on cooldown
+    const hostname = new URL(url).hostname
+    const onCooldown = await isOnCooldown(hostname)
+    if (onCooldown) {
+      console.log(`host ${hostname} on cooldown, re-enqueueing: ${url}`)
+      await enqueue(jobId, url, depth)
+      continue
+    }
+
+    // set cooldown before crawling so no other iteration jumps in
+    await setCooldown(hostname, crawlDelay)
+
     try {
       console.log(`crawling depth=${depth} url=${url}`)
       const { links, page } = await crawl(url)
 
-      // mark the final url as seen (post-redirect) so we don't re-crawl it
+      // mark the final url as seen (post-redirect)
       await redis.sadd(seenKey(jobId), page.finalUrl)
 
       // increment pages crawled counter
@@ -69,7 +93,6 @@ async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
         await enqueue(jobId, link, depth + 1)
       }
     } catch (err: unknown) {
-      // one bad url shouldn't stop the whole crawl
       const message = err instanceof Error ? err.message : String(err)
       console.error(`crawl failed for ${url}: ${message}`)
     }
@@ -85,7 +108,8 @@ async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
 export async function startJob(
   seedUrl: string,
   maxDepth = MAX_DEPTH,
-  maxPages = MAX_PAGES
+  maxPages = MAX_PAGES,
+  crawlDelay = 2
 ) {
   const jobId = createId()
 
@@ -94,7 +118,7 @@ export async function startJob(
   await redis.set(countKey(jobId), 0)
 
   // start worker without awaiting - runs in background
-  runWorker(jobId, maxDepth, maxPages).catch((err) => {
+  runWorker(jobId, maxDepth, maxPages, crawlDelay).catch((err) => {
     console.error(`worker crashed for job ${jobId}: ${err.message}`)
   })
 
@@ -104,7 +128,6 @@ export async function startJob(
 export async function getJobStatus(jobId: string) {
   const count = await redis.get(countKey(jobId))
 
-  // if count key doesn't exist, job is not found or already cleaned up
   if (count === null) {
     return { jobId, status: 'not_found' as const }
   }
