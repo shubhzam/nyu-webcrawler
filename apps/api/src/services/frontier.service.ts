@@ -12,6 +12,9 @@ function frontierKey(jobId: string) {
 function countKey(jobId: string) {
   return `frontier:${jobId}:count`
 }
+function seenKey(jobId: string) {
+  return `seen-urls:${jobId}`
+}
 
 // add a url to the frontier queue
 async function enqueue(jobId: string, url: string, depth: number) {
@@ -44,9 +47,19 @@ async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
     // skip if too deep
     if (depth > maxDepth) continue
 
+    // url seen? check - skip if we've already crawled this url in this job
+    const seen = await redis.sismember(seenKey(jobId), url)
+    if (seen) {
+      console.log(`skipping seen url: ${url}`)
+      continue
+    }
+
     try {
       console.log(`crawling depth=${depth} url=${url}`)
-      const { links } = await crawl(url)
+      const { links, page } = await crawl(url)
+
+      // mark the final url as seen (post-redirect) so we don't re-crawl it
+      await redis.sadd(seenKey(jobId), page.finalUrl)
 
       // increment pages crawled counter
       await redis.incr(countKey(jobId))
@@ -65,6 +78,7 @@ async function runWorker(jobId: string, maxDepth: number, maxPages: number) {
   // cleanup redis keys when done
   await redis.del(frontierKey(jobId))
   await redis.del(countKey(jobId))
+  await redis.del(seenKey(jobId))
   console.log(`job ${jobId} complete`)
 }
 
@@ -97,7 +111,6 @@ export async function getJobStatus(jobId: string) {
 
   const queueSize = await redis.llen(frontierKey(jobId))
   const pagesCrawled = Number(count)
-
   const status = queueSize === 0 ? 'done' as const : 'running' as const
 
   return { jobId, status, pagesCrawled, queueSize }

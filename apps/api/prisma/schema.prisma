@@ -20,6 +20,7 @@ model Page {
   links       Link[]
 
   @@index([fetchedAt])
+  @@index([contentHash])
 }
 
 model Link {

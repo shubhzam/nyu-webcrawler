@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio'
+import { createHash } from 'crypto'
 import prisma from '../lib/prisma'
 
 // how long to wait for a page to respond before giving up
@@ -17,7 +18,6 @@ function normalizeUrl(href: string, base: string): string | null {
     url.hash = ''
     return url.toString()
   } catch {
-    // new URL() throws on malformed hrefs - just skip them
     return null
   }
 }
@@ -59,6 +59,27 @@ export async function crawl(url: string) {
   const buffer = await response.arrayBuffer()
   const html = new TextDecoder().decode(buffer.slice(0, MAX_BODY_BYTES))
 
+  // compute content hash for dedup - md5 is fast and collision risk is negligible
+  const contentHash = createHash('md5').update(html).digest('hex')
+
+  // content seen? check - if we've stored this exact html before, skip storing
+  const existing = await prisma.page.findFirst({ where: { contentHash } })
+  if (existing) {
+    console.log(`content already seen for ${url} (matches ${existing.url}), skipping store`)
+
+    // still parse and return links - they might lead to pages we haven't seen
+    const $ = cheerio.load(html)
+    const linkSet = new Set<string>()
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href')
+      if (!href) return
+      const normalized = normalizeUrl(href, finalUrl)
+      if (normalized) linkSet.add(normalized)
+    })
+    const links = Array.from(linkSet)
+    return { page: existing, links, linkCount: links.length }
+  }
+
   // parse title and all hrefs with cheerio
   const $ = cheerio.load(html)
   const title = $('title').first().text().trim() || undefined
@@ -77,8 +98,8 @@ export async function crawl(url: string) {
   const page = await prisma.$transaction(async (tx) => {
     const savedPage = await tx.page.upsert({
       where: { url },
-      create: { url, finalUrl, statusCode, contentType, title, html },
-      update: { finalUrl, statusCode, contentType, title, html, fetchedAt: new Date() },
+      create: { url, finalUrl, statusCode, contentType, title, html, contentHash },
+      update: { finalUrl, statusCode, contentType, title, html, contentHash, fetchedAt: new Date() },
     })
 
     // replace links on every crawl - clean slate so removed links don't persist

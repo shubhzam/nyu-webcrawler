@@ -2,7 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import crawlRouter from './routes/crawl'
-
+import jobRouter from './routes/job'
 
 const app = express()
 const port = process.env.PORT || 3000
@@ -19,6 +19,8 @@ app.get('/health', (req, res) => {
 })
 
 app.use('/api/crawl', crawlRouter)
+app.use('/api/crawl/job', jobRouter)
+
 
 
 app.listen(port, () => {
